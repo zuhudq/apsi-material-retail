@@ -1,0 +1,5 @@
+# Mengabaikan folder dependency jika nanti pakai Tailwind CLI/NPM
+node_modules/
+
+# Mengabaikan file log error PHP (opsional)
+error_log
