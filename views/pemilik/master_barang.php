@@ -45,9 +45,7 @@ $result_barang = mysqli_query($conn, $query_barang);
             <a href="laporan_stok.php" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">
                 <span class="mr-3">📄</span> Laporan Penjualan
             </a>
-            <a href="#" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">
-                <span class="mr-3">⚙️</span> Pengaturan
-            </a>
+            <a href="manajemen_user.php" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">👥 Manajemen Akun</a>
         </nav>
         <div class="p-4 border-t border-indigo-800">
             <a href="../../auth/login.php" class="flex items-center p-3 text-red-300 hover:text-white hover:bg-red-600 rounded-lg transition-colors">
