@@ -1,7 +1,6 @@
 <?php
 session_start();
 
-// Proteksi Halaman: Hanya Staf Gudang (dan Pemilik) yang boleh akses
 if (!isset($_SESSION['id_user']) || ($_SESSION['role'] !== 'Staf Gudang' && $_SESSION['role'] !== 'Pemilik')) {
     header("Location: ../../auth/login.php");
     exit;
@@ -10,70 +9,60 @@ if (!isset($_SESSION['id_user']) || ($_SESSION['role'] !== 'Staf Gudang' && $_SE
 require_once '../../config/koneksi.php';
 /** @var mysqli $conn */
 
-$error = '';
 $success = '';
+$error = '';
 
-// Ambil data supplier dan barang untuk dropdown
-$query_supplier = mysqli_query($conn, "SELECT * FROM supplier ORDER BY nama_supplier ASC");
-$query_barang = mysqli_query($conn, "SELECT id_barang, kode_sku, nama_barang FROM barang ORDER BY nama_barang ASC");
+// Proses Validasi Penerimaan Barang & Laporan Rusak
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['terima_barang'])) {
+    $id_po_terima = intval($_POST['id_po']);
+    $id_barangs = $_POST['id_barang'];
+    $qty_bagus = $_POST['qty_bagus'];
+    $qty_rusak = $_POST['qty_rusak'];
+    $catatan = $_POST['catatan_kondisi'];
 
-// Simpan data barang ke array untuk dipakai di JavaScript (Dynamic Row)
-$barang_options = "";
-while ($b = mysqli_fetch_assoc($query_barang)) {
-    $barang_options .= "<option value='{$b['id_barang']}'>{$b['kode_sku']} - {$b['nama_barang']}</option>";
-}
+    $ada_rusak = false;
 
-// Proses form saat disubmit
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $id_supplier = intval($_POST['id_supplier']);
-    $no_sj = mysqli_real_escape_string($conn, $_POST['no_sj']);
-    $tanggal_terima = mysqli_real_escape_string($conn, $_POST['tanggal_terima']);
-    $catatan = mysqli_real_escape_string($conn, $_POST['catatan']);
-    $id_user = $_SESSION['id_user'];
-
-    // Memulai Transaksi Atomik MySQL
     mysqli_begin_transaction($conn);
-
     try {
-        // 1. Simpan Header Penerimaan
-        $query_terima = "INSERT INTO penerimaan (id_supplier, id_user, tanggal_terima, no_sj, catatan) 
-                         VALUES ($id_supplier, $id_user, '$tanggal_terima', '$no_sj', '$catatan')";
-        mysqli_query($conn, $query_terima);
+        for ($i = 0; $i < count($id_barangs); $i++) {
+            $id_b = intval($id_barangs[$i]);
+            $qb = floatval($qty_bagus[$i]);
+            $qr = floatval($qty_rusak[$i]);
+            $cat = mysqli_real_escape_string($conn, $catatan[$i]);
 
-        // Ambil ID penerimaan yang baru saja terbuat
-        $id_terima = mysqli_insert_id($conn);
+            if ($qr > 0) $ada_rusak = true;
 
-        // 2. Looping array item barang yang diinput dinamis
-        $items = $_POST['id_barang'];
-        $qtys = $_POST['kuantitas'];
-        $satuans = $_POST['satuan'];
-        $hargas = $_POST['harga_beli'];
+            // 1. Catat rincian bagus/rusak ke detail_po
+            mysqli_query($conn, "UPDATE detail_po SET qty_bagus = $qb, qty_rusak = $qr, catatan_kondisi = '$cat' WHERE id_po = $id_po_terima AND id_barang = $id_b");
 
-        for ($i = 0; $i < count($items); $i++) {
-            $id_barang = intval($items[$i]);
-            $qty = floatval($qtys[$i]);
-            $satuan = mysqli_real_escape_string($conn, $satuans[$i]);
-            $harga = floatval($hargas[$i]);
-
-            // Insert ke tabel detail_terima
-            $query_detail = "INSERT INTO detail_terima (id_terima, id_barang, kuantitas_terima, satuan_terima, harga_beli) 
-                             VALUES ($id_terima, $id_barang, $qty, '$satuan', $harga)";
-            mysqli_query($conn, $query_detail);
-
-            // 3. Update stok aktual di tabel barang
-            $query_update_stok = "UPDATE barang SET stok_aktual = stok_aktual + $qty WHERE id_barang = $id_barang";
-            mysqli_query($conn, $query_update_stok);
+            // 2. HANYA tambahkan qty_bagus ke stok aktual toko
+            if ($qb > 0) {
+                mysqli_query($conn, "UPDATE barang SET stok_aktual = stok_aktual + $qb WHERE id_barang = $id_b");
+            }
         }
 
-        // Jika semua query sukses tanpa error, resmikan perubahan di database
+        // 3. Ubah status PO (Selesai bersih ATAU Selesai dengan masalah klaim)
+        $status_baru = $ada_rusak ? 'Selesai dengan Klaim' : 'Selesai';
+        mysqli_query($conn, "UPDATE purchase_order SET status = '$status_baru' WHERE id_po = $id_po_terima");
+
         mysqli_commit($conn);
-        $success = "Penerimaan barang dari Surat Jalan '$no_sj' berhasil disimpan dan stok telah diperbarui otomatis!";
+        if ($ada_rusak) {
+            $success = "⚠️ Validasi disimpan! Ditemukan barang rusak. Laporan klaim telah diteruskan ke Pemilik.";
+        } else {
+            $success = "✅ Validasi berhasil! Semua barang dalam kondisi baik dan stok telah ditambahkan.";
+        }
     } catch (Exception $e) {
-        // Jika ada 1 saja query yang gagal, batalkan semuanya (Rollback) agar data tidak belang
         mysqli_rollback($conn);
-        $error = "Gagal memproses penerimaan: " . $e->getMessage();
+        $error = "Terjadi kesalahan saat validasi barang masuk.";
     }
 }
+
+// Ambil Daftar Pengiriman
+$query_inbound = mysqli_query($conn, "SELECT po.*, v.nama_vendor 
+                                      FROM purchase_order po 
+                                      JOIN vendor v ON po.id_vendor = v.id_vendor 
+                                      WHERE po.status = 'Dikirim' 
+                                      ORDER BY po.tanggal_po ASC");
 ?>
 
 <!DOCTYPE html>
@@ -82,11 +71,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Penerimaan Barang - Staf Gudang</title>
+    <title>Penerimaan Barang (Inbound) - Gudang</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .custom-scroll::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 4px;
+        }
+    </style>
 </head>
 
-<body class="bg-gray-50 flex h-screen overflow-hidden">
+<body class="bg-gray-100 flex h-screen overflow-hidden">
 
     <aside class="w-64 bg-teal-900 text-white flex flex-col h-full shadow-lg">
         <div class="p-6 border-b border-teal-800">
@@ -94,147 +93,140 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             <p class="text-sm text-teal-300 mt-1">Halo, <?= htmlspecialchars($_SESSION['nama_lengkap']); ?></p>
         </div>
         <nav class="flex-1 p-4 space-y-2">
-            <a href="inbound.php" class="flex items-center p-3 bg-teal-800 rounded-lg font-semibold transition-colors">
-                <span class="mr-3">📥</span> Terima Barang (Inbound)
+            <a href="pantau_stok.php" class="flex items-center p-3 bg-teal-800 rounded-lg font-semibold transition-colors">
+                <span class="mr-3">👁️</span> Pantau Stok
+            </a>
+            <a href="inbound.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
+                <span class="mr-3">📥</span> Terima Barang
             </a>
             <a href="konversi.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
                 <span class="mr-3">🔄</span> Konversi Satuan
             </a>
+            <a href="stok_opname.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
+                <span class="mr-3">📋</span> Stok Opname
+            </a>
+            <a href="daftar_vendor.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
+                <span class="mr-3">🏢</span> Data Vendor
+            </a>
         </nav>
         <div class="p-4 border-t border-teal-800">
-            <a href="../../auth/login.php" class="flex items-center p-3 text-red-300 hover:text-white hover:bg-red-600 rounded-lg transition-colors">
-                <span class="mr-3">🚪</span> Logout
-            </a>
+            <a href="../../auth/login.php" class="flex items-center p-3 text-red-300 hover:text-white hover:bg-red-600 rounded-lg transition-colors">🚪 Logout</a>
         </div>
     </aside>
 
-    <main class="flex-1 p-8 overflow-y-auto">
-        <h2 class="text-2xl font-bold text-gray-800 mb-6">Input Penerimaan Barang (Surat Jalan)</h2>
+    <main class="flex-1 p-8 overflow-y-auto custom-scroll">
+        <div class="mb-6">
+            <h2 class="text-2xl font-bold text-gray-800">Validasi Penerimaan Barang</h2>
+            <p class="text-gray-500 text-sm mt-1">Periksa fisik barang dan pisahkan jika ada yang rusak/cacat di jalan.</p>
+        </div>
 
         <?php if ($error != ''): ?>
-            <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6"><?= $error; ?></div>
+            <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4">
+                <p><?= $error; ?></p>
+            </div>
         <?php endif; ?>
         <?php if ($success != ''): ?>
-            <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-6"><?= $success; ?></div>
+            <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4">
+                <p><?= $success; ?></p>
+            </div>
         <?php endif; ?>
 
-        <form action="" method="POST" class="bg-white p-6 rounded-lg shadow">
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                <div>
-                    <label class="block text-gray-700 text-sm font-bold mb-2">No. Surat Jalan</label>
-                    <input type="text" name="no_sj" required class="w-full border border-gray-300 rounded px-4 py-2 focus:ring-teal-500">
-                </div>
-                <div>
-                    <label class="block text-gray-700 text-sm font-bold mb-2">Tanggal Terima</label>
-                    <input type="date" name="tanggal_terima" value="<?= date('Y-m-d'); ?>" required class="w-full border border-gray-300 rounded px-4 py-2 focus:ring-teal-500">
-                </div>
-                <div>
-                    <label class="block text-gray-700 text-sm font-bold mb-2">Supplier</label>
-                    <select name="id_supplier" required class="w-full border border-gray-300 rounded px-4 py-2 focus:ring-teal-500">
-                        <option value="" disabled selected>-- Pilih Supplier --</option>
-                        <option value="1">PT Supplier Utama (Dummy)</option>
-                        <?php
-                        if (mysqli_num_rows($query_supplier) > 0) {
-                            while ($sup = mysqli_fetch_assoc($query_supplier)) {
-                                echo "<option value='{$sup['id_supplier']}'>{$sup['nama_supplier']}</option>";
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-gray-50 text-gray-700 text-sm uppercase">
+                        <th class="py-4 px-6 border-b">No. Referensi (PO)</th>
+                        <th class="py-4 px-6 border-b">Asal Vendor</th>
+                        <th class="py-4 px-6 border-b text-center">Aksi Validasi</th>
+                    </tr>
+                </thead>
+                <tbody class="text-gray-700 text-sm">
+                    <?php if (mysqli_num_rows($query_inbound) > 0): ?>
+                        <?php while ($row = mysqli_fetch_assoc($query_inbound)):
+                            // Siapkan JSON data barang untuk JavaScript
+                            $id_po_curr = $row['id_po'];
+                            $q_det = mysqli_query($conn, "SELECT d.id_barang, d.qty_pesan, b.nama_barang, b.kode_sku FROM detail_po d JOIN barang b ON d.id_barang = b.id_barang WHERE d.id_po = $id_po_curr");
+                            $items = [];
+                            while ($det = mysqli_fetch_assoc($q_det)) {
+                                $items[] = $det;
                             }
-                        }
+                            $json_items = htmlspecialchars(json_encode($items), ENT_QUOTES, 'UTF-8');
                         ?>
-                    </select>
-                </div>
-            </div>
-
-            <div class="mb-6 border border-gray-200 rounded">
-                <table class="w-full text-left" id="tabel-item">
-                    <thead class="bg-gray-100 border-b border-gray-200 text-gray-700 text-sm">
+                            <tr class="hover:bg-gray-50 border-b">
+                                <td class="py-4 px-6 font-mono font-bold text-teal-700">PO-<?= sprintf("%05d", $row['id_po']); ?></td>
+                                <td class="py-4 px-6 font-semibold"><?= htmlspecialchars($row['nama_vendor']); ?></td>
+                                <td class="py-4 px-6 text-center">
+                                    <button onclick="bukaModalValidasi(<?= $row['id_po']; ?>, '<?= htmlspecialchars($row['nama_vendor']); ?>', '<?= $json_items; ?>')" class="bg-teal-600 hover:bg-teal-700 text-white py-2 px-4 rounded text-xs font-bold transition-colors">
+                                        📦 Cek Fisik & Terima
+                                    </button>
+                                </td>
+                            </tr>
+                        <?php endwhile; ?>
+                    <?php else: ?>
                         <tr>
-                            <th class="p-3 w-2/5">Nama Barang / SKU</th>
-                            <th class="p-3">Kuantitas</th>
-                            <th class="p-3">Satuan</th>
-                            <th class="p-3">Harga Beli (Rp)</th>
-                            <th class="p-3 text-center">Aksi</th>
+                            <td colspan="3" class="py-10 text-center text-gray-400 italic">Tidak ada pengiriman barang yang dijadwalkan hari ini.</td>
                         </tr>
-                    </thead>
-                    <tbody id="tbody-item">
-                        <tr class="border-b border-gray-100">
-                            <td class="p-3">
-                                <select name="id_barang[]" required class="w-full border border-gray-300 rounded px-2 py-1">
-                                    <option value="" disabled selected>Pilih Barang</option>
-                                    <?= $barang_options; ?>
-                                </select>
-                            </td>
-                            <td class="p-3"><input type="number" step="0.01" name="kuantitas[]" required class="w-full border border-gray-300 rounded px-2 py-1"></td>
-                            <td class="p-3"><input type="text" name="satuan[]" placeholder="cth: Sak" required class="w-full border border-gray-300 rounded px-2 py-1"></td>
-                            <td class="p-3">
-                                <input type="number" name="harga_beli[]" placeholder="cth: 40000" title="Harga per satuan" required class="w-full border border-gray-300 rounded px-2 py-1">
-                            </td>
-                            <td class="p-3 text-center">
-                                <button type="button" class="bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1 font-bold hapus-baris">X</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div class="p-3 bg-gray-50 border-t border-gray-200">
-                    <button type="button" id="btn-tambah" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-4 rounded text-sm transition-colors">
-                        + Tambah Baris Item
-                    </button>
-                </div>
-            </div>
-
-            <div class="mb-6">
-                <label class="block text-gray-700 text-sm font-bold mb-2">Catatan Tambahan (Opsional)</label>
-                <textarea name="catatan" rows="2" class="w-full border border-gray-300 rounded px-4 py-2 focus:ring-teal-500"></textarea>
-            </div>
-
-            <div class="flex justify-end">
-                <button type="submit" class="bg-teal-700 hover:bg-teal-900 text-white font-bold py-2 px-8 rounded shadow transition-colors">
-                    Simpan Penerimaan
-                </button>
-            </div>
-        </form>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </main>
 
+    <div id="modalValidasi" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg w-2/3 p-6 shadow-xl max-h-[90vh] flex flex-col">
+            <div class="flex justify-between items-center mb-4 border-b pb-3">
+                <h3 class="text-xl font-bold text-gray-800">Validasi Fisik & Kondisi Barang</h3>
+                <button onclick="document.getElementById('modalValidasi').classList.add('hidden')" class="text-gray-500 hover:text-red-500 text-2xl font-bold">&times;</button>
+            </div>
+
+            <form action="" method="POST" class="flex-1 overflow-y-auto custom-scroll pr-2">
+                <input type="hidden" name="id_po" id="val_id_po">
+                <p class="text-sm text-gray-600 mb-4">Surat Jalan / PO dari: <strong id="val_vendor" class="text-teal-700"></strong></p>
+
+                <div id="val_list_barang" class="space-y-4 mb-6"></div>
+
+                <div class="flex justify-end space-x-2 border-t pt-4">
+                    <button type="button" onclick="document.getElementById('modalValidasi').classList.add('hidden')" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Batal</button>
+                    <button type="submit" name="terima_barang" onclick="return confirm('Data sudah akurat? Barang rusak tidak akan ditambahkan ke stok toko.')" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-6 rounded shadow">✓ Validasi & Masukkan Stok</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const tbody = document.getElementById('tbody-item');
-            const btnTambah = document.getElementById('btn-tambah');
+        function bukaModalValidasi(id_po, vendor, json_items) {
+            document.getElementById('val_id_po').value = id_po;
+            document.getElementById('val_vendor').innerText = vendor;
 
-            // Template baris baru
-            const templateBaris = `
-                <tr class="border-b border-gray-100">
-                    <td class="p-3">
-                        <select name="id_barang[]" required class="w-full border border-gray-300 rounded px-2 py-1">
-                            <option value="" disabled selected>Pilih Barang</option>
-                            <?= $barang_options; ?>
-                        </select>
-                    </td>
-                    <td class="p-3"><input type="number" step="0.01" name="kuantitas[]" required class="w-full border border-gray-300 rounded px-2 py-1"></td>
-                    <td class="p-3"><input type="text" name="satuan[]" placeholder="cth: Sak" required class="w-full border border-gray-300 rounded px-2 py-1"></td>
-                    <td class="p-3"><input type="number" name="harga_beli[]" placeholder="cth: 40000" required class="w-full border border-gray-300 rounded px-2 py-1"></td>
-                    <td class="p-3 text-center">
-                        <button type="button" class="bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1 font-bold hapus-baris">X</button>
-                    </td>
-                </tr>
-            `;
+            let items = JSON.parse(json_items);
+            let htmlForm = '';
 
-            // Fungsi tambah baris
-            btnTambah.addEventListener('click', function() {
-                tbody.insertAdjacentHTML('beforeend', templateBaris);
+            items.forEach(item => {
+                htmlForm += `
+                <div class="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                    <p class="font-bold text-gray-800 text-sm mb-3">[${item.kode_sku}] ${item.nama_barang} <span class="text-teal-600">(Dipesan: ${item.qty_pesan})</span></p>
+                    <input type="hidden" name="id_barang[]" value="${item.id_barang}">
+                    <div class="flex space-x-4">
+                        <div class="w-1/4">
+                            <label class="block text-xs font-bold text-green-600 mb-1">Diterima Bagus</label>
+                            <input type="number" step="any" name="qty_bagus[]" max="${item.qty_pesan}" value="${item.qty_pesan}" required class="w-full border rounded px-2 py-1 focus:border-teal-500 focus:outline-none">
+                        </div>
+                        <div class="w-1/4">
+                            <label class="block text-xs font-bold text-red-600 mb-1">Diterima Rusak</label>
+                            <input type="number" step="any" name="qty_rusak[]" min="0" max="${item.qty_pesan}" value="0" required class="w-full border rounded px-2 py-1 focus:border-red-500 focus:outline-none">
+                        </div>
+                        <div class="w-2/4">
+                            <label class="block text-xs font-bold text-gray-500 mb-1">Keterangan Rusak (Bila ada)</label>
+                            <input type="text" name="catatan_kondisi[]" placeholder="Contoh: Pecah, basah, penyok..." class="w-full border rounded px-2 py-1 focus:border-teal-500 focus:outline-none">
+                        </div>
+                    </div>
+                </div>
+                `;
             });
 
-            // Fungsi hapus baris menggunakan event delegation
-            tbody.addEventListener('click', function(e) {
-                if (e.target.classList.contains('hapus-baris')) {
-                    const rowCount = tbody.getElementsByTagName('tr').length;
-                    if (rowCount > 1) {
-                        e.target.closest('tr').remove();
-                    } else {
-                        alert("Minimal harus ada 1 item barang yang diterima!");
-                    }
-                }
-            });
-        });
+            document.getElementById('val_list_barang').innerHTML = htmlForm;
+            document.getElementById('modalValidasi').classList.remove('hidden');
+        }
     </script>
 </body>
 

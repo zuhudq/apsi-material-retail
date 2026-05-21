@@ -88,11 +88,20 @@ $result_list = mysqli_query($conn, $query_list);
             <p class="text-sm text-teal-300 mt-1">Halo, <?= htmlspecialchars($_SESSION['nama_lengkap']); ?></p>
         </div>
         <nav class="flex-1 p-4 space-y-2">
+            <a href="pantau_stok.php" class="flex items-center p-3 bg-teal-800 rounded-lg font-semibold transition-colors">
+                <span class="mr-3">👁️</span> Pantau Stok
+            </a>
             <a href="inbound.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
                 <span class="mr-3">📥</span> Terima Barang
             </a>
-            <a href="konversi.php" class="flex items-center p-3 bg-teal-800 rounded-lg font-semibold transition-colors">
+            <a href="konversi.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
                 <span class="mr-3">🔄</span> Konversi Satuan
+            </a>
+            <a href="stok_opname.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
+                <span class="mr-3">📋</span> Stok Opname
+            </a>
+            <a href="daftar_vendor.php" class="flex items-center p-3 hover:bg-teal-800 rounded-lg transition-colors">
+                <span class="mr-3">🏢</span> Data Vendor
             </a>
         </nav>
         <div class="p-4 border-t border-teal-800">

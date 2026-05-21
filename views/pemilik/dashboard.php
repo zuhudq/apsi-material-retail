@@ -140,6 +140,8 @@ $result_tabel_kritis = mysqli_query($conn, $query_tabel_kritis);
             <a href="dashboard.php" class="flex items-center p-3 bg-indigo-800 rounded-lg font-semibold transition-colors">📊 Dashboard</a>
             <a href="master_barang.php" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">📦 Master Barang</a>
             <a href="laporan_stok.php" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">📋 Laporan Stok</a>
+            <a href="pengadaan.php" class="flex items-center p-3 bg-indigo-800 rounded-lg font-semibold transition-colors">📝 Pengadaan (PO)</a>
+
             <a href="manajemen_user.php" class="flex items-center p-3 hover:bg-indigo-800 rounded-lg transition-colors">👥 Manajemen Akun</a>
         </nav>
         <div class="p-4 border-t border-indigo-800">
